@@ -40,8 +40,8 @@ const ROOM_ROTATE_HANDLE_OFFSET_PX = 40;
 const ROOM_ROTATE_HIT_PX = 24;
 const CLICK_DRAG_THRESHOLD_PX = 5;
 const ROOM_ROTATION_IDLE_MS = 1100;
-const PANEL_VISIBLE_MS = 1200;
-const PANEL_HOVER_VISIBLE_MS = 1000;
+const PANEL_VISIBLE_MS = 520;
+const PANEL_HOVER_VISIBLE_MS = 420;
 const ROOM_RESIZE_HIT_PX = 14;
 // How much outdoor world-space we expose around the room, expressed as a
 // fraction of the room's dimensions on each side. 0.5 means a 4 m room is
@@ -888,24 +888,7 @@ export default function Heatmap2D({
     if (!inRoomRect(x, y)) {
       setSelectedId(null);
       hideRoomRotation();
-      // Only treat clicks inside the outdoor area as obstacle placement;
-      // clicks outside the canvas's drawable region just deselect (the
-      // compass margin is reserved for orientation controls).
-      if (onAddObstacle && inOutdoorArea(x, y)) {
-        const world = canvasToWorldXZ(x, y, pxW, pxH, roomW, roomD);
-        const type = OBSTACLE_TYPES.find(t => t.id === obstacleType) || OBSTACLE_TYPES[0];
-        const id = onAddObstacle?.({
-          type: type.id,
-          x: clamp(world.X, worldMinX, worldMaxX),
-          z: clamp(world.Z, worldMinZ, worldMaxZ),
-          radius: type.radius,
-          height: type.height,
-        });
-        setSelectedObstacleId(id || null);
-        revealPanel();
-      } else {
-        setSelectedObstacleId(null);
-      }
+      setSelectedObstacleId(null);
       bumpRender();
       return;
     }
@@ -1242,8 +1225,7 @@ export default function Heatmap2D({
       return;
     }
     if (!inRoomRect(x, y)) {
-      // In the outdoor buffer? Show a "drop here" cursor; otherwise default.
-      setCursor(onAddObstacle && inOutdoorArea(x, y) ? 'copy' : 'default');
+      setCursor('default');
       return;
     }
     // Hover over an existing item?
@@ -1419,9 +1401,9 @@ function panelShell(children, visible = true, handlers = {}) {
       fontSize: 12,
       boxShadow: '0 4px 16px rgba(0,0,0,0.35)',
       opacity: visible ? 1 : 0,
-      transform: visible ? 'translateY(0) scale(1)' : 'translateY(-4px) scale(0.98)',
+      transform: visible ? 'translateY(0) scale(1)' : 'translateY(-3px) scale(0.985)',
       pointerEvents: visible ? 'auto' : 'none',
-      transition: 'opacity 180ms ease, transform 180ms ease',
+      transition: 'opacity 105ms ease-out, transform 105ms ease-out',
     }}>
       {children}
     </div>
