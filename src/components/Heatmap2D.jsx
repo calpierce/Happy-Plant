@@ -37,7 +37,7 @@ const HANDLE_SIZE_PX  = 10;
 // rect) lives inside CANVAS_PX - 2*COMPASS_MARGIN.
 const COMPASS_MARGIN  = 22;
 const ROOM_ROTATE_HANDLE_OFFSET_PX = 40;
-const ROOM_ROTATE_HIT_PX = 15;
+const ROOM_ROTATE_HIT_PX = 24;
 const CLICK_DRAG_THRESHOLD_PX = 5;
 const ROOM_ROTATION_IDLE_MS = 1100;
 const PANEL_VISIBLE_MS = 1200;
@@ -732,7 +732,7 @@ export default function Heatmap2D({
     ctx.restore();
   }, [grid, windows, obstacles, selectedId, selectedObstacleId, roomSelected, showGridLines, roomW, roomD, roomH, pxW, pxH, pxOffsetX, pxOffsetY, outW, outH, roomInsetX, roomInsetY, bearingDeg, compassMarkers, roomRotateHandle.x, roomRotateHandle.y, sunPos?.altitude, onDimsChange, onBearingChange]);
 
-  // ── Mouse handlers ────────────────────────────────────────────────────────
+  // ── Pointer handlers ──────────────────────────────────────────────────────
   // Returns coords inside the ROOM rect (0..pxW, 0..pxH), accounting for
   // letterbox offsets.
   const getCanvasPos = (e) => {
@@ -829,9 +829,10 @@ export default function Heatmap2D({
     return null;
   };
 
-  const onMouseDown = (e) => {
+  const onPointerDown = (e) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
+    canvas.setPointerCapture?.(e.pointerId);
 
     const abs = getAbsPos(e);
     const { x, y } = getCanvasPos(e);
@@ -995,7 +996,7 @@ export default function Heatmap2D({
     }
   };
 
-  const onMouseMove = (e) => {
+  const onPointerMove = (e) => {
     const ia = interactionRef.current;
     if (!ia) return;
     const canvas = canvasRef.current;
@@ -1122,9 +1123,10 @@ export default function Heatmap2D({
     }
   };
 
-  const onMouseUp = (e) => {
+  const onPointerUp = (e) => {
     const ia = interactionRef.current;
     if (!ia) return;
+    e.currentTarget.releasePointerCapture?.(e.pointerId);
     const endAbs = e ? getAbsPos(e) : null;
 
     if (ia.type === 'rotating-room') {
@@ -1177,6 +1179,12 @@ export default function Heatmap2D({
       }
     }
 
+    interactionRef.current = null;
+    bumpRender();
+  };
+
+  const onPointerCancel = (e) => {
+    e.currentTarget.releasePointerCapture?.(e.pointerId);
     interactionRef.current = null;
     bumpRender();
   };
@@ -1270,10 +1278,13 @@ export default function Heatmap2D({
         ref={canvasRef}
         width={CANVAS_PX}
         height={CANVAS_PX}
-        onMouseDown={onMouseDown}
-        onMouseMove={(e) => { onMouseMove(e); onHoverMove(e); }}
-        onMouseUp={onMouseUp}
-        onMouseLeave={onMouseUp}
+        onPointerDown={onPointerDown}
+        onPointerMove={(e) => { onPointerMove(e); onHoverMove(e); }}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerCancel}
+        onPointerLeave={(e) => {
+          if (!interactionRef.current) onHoverMove(e);
+        }}
         style={{
           width: '100%',
           maxWidth: CANVAS_PX,
