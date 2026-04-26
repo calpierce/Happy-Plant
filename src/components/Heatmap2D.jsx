@@ -16,6 +16,8 @@ import {
  * Interactions:
  *   - Drag along any wall edge  →  create a wall window
  *   - Drag inside the room      →  create a skylight (rectangle in ceiling)
+ *   - Click empty room space    →  show the room rotation handle
+ *   - Drag room rotation handle →  rotate room bearing
  *   - Click a window/skylight   →  select it
  *   - Drag middle of a selected item → move
  *   - Drag an end handle (wall) / corner handle (skylight) → resize
@@ -30,11 +32,14 @@ import {
 const CANVAS_PX = 360;
 const WALL_HIT_MARGIN = 18;
 const HANDLE_SIZE_PX  = 10;
-// Padding on each side of the canvas reserved for the rotating compass rose
-// (N / S / E / W markers drawn around the room).  The drawable area (which
-// holds the outdoor zone + the room rect) lives inside CANVAS_PX - 2*COMPASS_MARGIN.
+// Padding on each side of the canvas reserved for the compass rose and room
+// rotate handle. The drawable area (which holds the outdoor zone + the room
+// rect) lives inside CANVAS_PX - 2*COMPASS_MARGIN.
 const COMPASS_MARGIN  = 22;
-const COMPASS_HIT_PX  = 16;  // hit radius around the draggable N marker
+const ROOM_ROTATE_HANDLE_OFFSET_PX = 40;
+const ROOM_ROTATE_HIT_PX = 15;
+const CLICK_DRAG_THRESHOLD_PX = 5;
+const ROOM_ROTATION_IDLE_MS = 1100;
 const PANEL_VISIBLE_MS = 1200;
 const PANEL_HOVER_VISIBLE_MS = 1000;
 const ROOM_RESIZE_HIT_PX = 14;
@@ -287,11 +292,13 @@ export default function Heatmap2D({
   const wrapperRef = useRef(null);
   const [selectedId, setSelectedId] = useState(null);
   const [selectedObstacleId, setSelectedObstacleId] = useState(null);
+  const [roomSelected, setRoomSelected] = useState(false);
   const [panelVisible, setPanelVisible] = useState(false);
   const [obstacleType, setObstacleType] = useState('tree');
 
   const interactionRef = useRef(null);
   const panelHideTimerRef = useRef(null);
+  const roomSelectionHideTimerRef = useRef(null);
   const panelPointerInsideRef = useRef(false);
   const [, setDragTick] = useState(0);
   const bumpRender = () => setDragTick(t => t + 1);
@@ -314,6 +321,31 @@ export default function Heatmap2D({
     }
   };
 
+  const clearRoomSelectionTimer = () => {
+    if (roomSelectionHideTimerRef.current) {
+      clearTimeout(roomSelectionHideTimerRef.current);
+      roomSelectionHideTimerRef.current = null;
+    }
+  };
+
+  const showRoomRotation = () => {
+    clearRoomSelectionTimer();
+    setRoomSelected(true);
+  };
+
+  const hideRoomRotation = () => {
+    clearRoomSelectionTimer();
+    setRoomSelected(false);
+  };
+
+  const scheduleRoomRotationHide = () => {
+    clearRoomSelectionTimer();
+    roomSelectionHideTimerRef.current = setTimeout(() => {
+      setRoomSelected(false);
+      roomSelectionHideTimerRef.current = null;
+    }, ROOM_ROTATION_IDLE_MS);
+  };
+
   useEffect(() => {
     if (selectedId || selectedObstacleId) revealPanel();
     else {
@@ -323,6 +355,8 @@ export default function Heatmap2D({
     }
     return clearPanelTimer;
   }, [selectedId, selectedObstacleId]);
+
+  useEffect(() => clearRoomSelectionTimer, []);
 
   // The 2D canvas stays square in pixels. Inside the drawable area
   // (CANVAS_PX - 2*COMPASS_MARGIN on a side) we letterbox the OUTDOOR area —
@@ -385,6 +419,11 @@ export default function Heatmap2D({
     { label: 'W', x: compassCx - compassR * cosB, y: compassCy + compassR * sinB },
   ];
 
+  const roomRotateHandle = {
+    x: pxW / 2,
+    y: -ROOM_ROTATE_HANDLE_OFFSET_PX,
+  };
+
   // ── Canvas drawing ────────────────────────────────────────────────────────
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -397,6 +436,7 @@ export default function Heatmap2D({
 
     // Clear whole canvas
     ctx.clearRect(0, 0, CW, CH);
+    const ia = interactionRef.current;
 
     // Work in a translated coord system so (0,0) is the room's top-left in canvas.
     ctx.save();
@@ -447,9 +487,40 @@ export default function Heatmap2D({
     }
 
     // Wall frame
-    ctx.strokeStyle = 'rgba(120,120,160,0.35)';
-    ctx.lineWidth = 1;
+    ctx.strokeStyle = roomSelected ? 'rgba(255,212,90,0.9)' : 'rgba(120,120,160,0.35)';
+    ctx.lineWidth = roomSelected ? 1.5 : 1;
     ctx.strokeRect(0.5, 0.5, pxW - 1, pxH - 1);
+
+    if (roomSelected && onBearingChange) {
+      const isRotating = ia && ia.type === 'rotating-room';
+      const hx = roomRotateHandle.x;
+      const hy = roomRotateHandle.y;
+
+      ctx.save();
+      ctx.strokeStyle = isRotating ? '#ffe890' : 'rgba(255,212,90,0.82)';
+      ctx.fillStyle = isRotating ? 'rgba(255,232,144,0.24)' : 'rgba(18,18,31,0.92)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(pxW / 2, 0);
+      ctx.lineTo(hx, hy + 10);
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.arc(hx, hy, 10, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.font = '700 13px system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = isRotating ? '#ffe890' : '#ffd45a';
+      ctx.fillText('↻', hx, hy - 0.5);
+
+      ctx.font = '600 10px system-ui, sans-serif';
+      ctx.fillStyle = 'rgba(255,244,210,0.85)';
+      ctx.fillText(`${Math.round(bearingDeg)}°`, hx, hy - 18);
+      ctx.restore();
+    }
 
     // Crop-style room resize handles: drag edges/corners to change W/D.
     if (onDimsChange) {
@@ -550,7 +621,6 @@ export default function Heatmap2D({
     }
 
     // ── Ghost previews while drawing ──────────────────────────────────────
-    const ia = interactionRef.current;
     if (ia && ia.type === 'drawing-wall') {
       const ghost = {
         wall: ia.wall,
@@ -630,10 +700,9 @@ export default function Heatmap2D({
 
     ctx.restore();
 
-    // ── Rotating compass rose (in canvas-absolute coords) ─────────────────
-    // Draws N / E / S / W letters in a circle around the room. The N marker
-    // is emphasised and draggable — the others are visual reference.
-    const isRotating = ia && ia.type === 'rotating';
+    // ── Compass rose (in canvas-absolute coords) ──────────────────────────
+    // Draws N / E / S / W letters around the room as passive orientation
+    // reference. Rotation now happens from the selected room handle.
     ctx.save();
     // Faint ring hint
     ctx.strokeStyle = 'rgba(120,120,160,0.15)';
@@ -647,23 +716,21 @@ export default function Heatmap2D({
     ctx.textBaseline = 'middle';
     for (const m of compassMarkers) {
       const isN = m.label === 'N';
-      ctx.fillStyle = isN
-        ? (isRotating ? '#ffe890' : '#ffd45a')
-        : 'rgba(180,180,200,0.55)';
+      ctx.fillStyle = isN ? '#ffd45a' : 'rgba(180,180,200,0.55)';
       if (isN) {
         ctx.beginPath();
-        ctx.arc(m.x, m.y, 9, 0, Math.PI * 2);
-        ctx.fillStyle = isRotating ? 'rgba(255,232,144,0.25)' : 'rgba(255,212,90,0.15)';
+        ctx.arc(m.x, m.y, 8, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255,212,90,0.12)';
         ctx.fill();
-        ctx.strokeStyle = isRotating ? '#ffe890' : '#ffd45a';
+        ctx.strokeStyle = 'rgba(255,212,90,0.7)';
         ctx.lineWidth = 1.2;
         ctx.stroke();
-        ctx.fillStyle = isRotating ? '#ffe890' : '#ffd45a';
+        ctx.fillStyle = '#ffd45a';
       }
       ctx.fillText(m.label, m.x, m.y);
     }
     ctx.restore();
-  }, [grid, windows, obstacles, selectedId, selectedObstacleId, showGridLines, roomW, roomD, roomH, pxW, pxH, pxOffsetX, pxOffsetY, outW, outH, roomInsetX, roomInsetY, bearingDeg, compassMarkers, sunPos?.altitude, onDimsChange]);
+  }, [grid, windows, obstacles, selectedId, selectedObstacleId, roomSelected, showGridLines, roomW, roomD, roomH, pxW, pxH, pxOffsetX, pxOffsetY, outW, outH, roomInsetX, roomInsetY, bearingDeg, compassMarkers, roomRotateHandle.x, roomRotateHandle.y, sunPos?.altitude, onDimsChange, onBearingChange]);
 
   // ── Mouse handlers ────────────────────────────────────────────────────────
   // Returns coords inside the ROOM rect (0..pxW, 0..pxH), accounting for
@@ -678,7 +745,7 @@ export default function Heatmap2D({
     };
   };
 
-  // Canvas-absolute coords (no offset subtraction), for compass interactions.
+  // Canvas-absolute coords (no offset subtraction).
   const getAbsPos = (e) => {
     const rect = canvasRef.current.getBoundingClientRect();
     const scaleX = canvasRef.current.width  / rect.width;
@@ -689,20 +756,44 @@ export default function Heatmap2D({
     };
   };
 
-  // Is the absolute point close enough to the N marker to start rotation?
-  const isNearCompassN = (absX, absY) => {
-    const n = compassMarkers[0];
-    return Math.hypot(absX - n.x, absY - n.y) <= COMPASS_HIT_PX;
+  const isNearRoomRotateHandle = (x, y) => (
+    roomSelected &&
+    onBearingChange &&
+    Math.hypot(x - roomRotateHandle.x, y - roomRotateHandle.y) <= ROOM_ROTATE_HIT_PX
+  );
+
+  const pointerMovedEnough = (startAbs, endAbs) => {
+    if (!startAbs || !endAbs) return false;
+    return Math.hypot(endAbs.x - startAbs.x, endAbs.y - startAbs.y) >= CLICK_DRAG_THRESHOLD_PX;
   };
 
-  // Compute bearingDeg such that the given absolute point sits on the N
-  // marker direction from the compass centre.
-  const bearingFromAbsPoint = (absX, absY) => {
-    const dx = absX - compassCx;
-    const dy = absY - compassCy;
-    if (Math.hypot(dx, dy) < 1) return bearingDeg;  // avoid NaN at centre
+  const angleFromRoomPoint = (x, y) => {
+    const dx = x - pxW / 2;
+    const dy = y - pxH / 2;
+    if (Math.hypot(dx, dy) < 1) return null;  // avoid NaN at centre
     const rad = Math.atan2(-dx, -dy);
     return normalizeBearing((rad * 180) / Math.PI);
+  };
+
+  const signedAngleDelta = (startDeg, currentDeg) => (
+    ((currentDeg - startDeg + 540) % 360) - 180
+  );
+
+  const addExternalObject = () => {
+    if (!onAddObstacle) return;
+    const type = OBSTACLE_TYPES.find(t => t.id === obstacleType) || OBSTACLE_TYPES[0];
+    const id = onAddObstacle({
+      type: type.id,
+      x: clamp(roomW + roomW * OUTDOOR_BUFFER_RATIO * 0.5, worldMinX, worldMaxX),
+      z: clamp(roomD / 2, worldMinZ, worldMaxZ),
+      radius: type.radius,
+      height: type.height,
+    });
+    setSelectedId(null);
+    setSelectedObstacleId(id || null);
+    hideRoomRotation();
+    revealPanel();
+    bumpRender();
   };
 
   // True if a point is inside (or very near) the current room rect.
@@ -742,18 +833,24 @@ export default function Heatmap2D({
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    // Priority 0: compass-N rotation handle (sits OUTSIDE the room rect).
     const abs = getAbsPos(e);
-    if (onBearingChange && isNearCompassN(abs.x, abs.y)) {
-      interactionRef.current = { type: 'rotating' };
+    const { x, y } = getCanvasPos(e);
+
+    // Priority 0: selected-room rotation handle.
+    if (isNearRoomRotateHandle(x, y)) {
+      const startAngle = angleFromRoomPoint(x, y);
+      interactionRef.current = {
+        type: 'rotating-room',
+        startAngle: startAngle ?? 0,
+        startBearing: bearingDeg,
+      };
       setSelectedId(null);
       setSelectedObstacleId(null);
-      onBearingChange(bearingFromAbsPoint(abs.x, abs.y));
+      showRoomRotation();
       bumpRender();
       return;
     }
 
-    const { x, y } = getCanvasPos(e);
     const roomHit = onDimsChange ? roomResizeHit(x, y, pxW, pxH) : null;
     if (roomHit) {
       interactionRef.current = {
@@ -765,6 +862,7 @@ export default function Heatmap2D({
       };
       setSelectedId(null);
       setSelectedObstacleId(null);
+      hideRoomRotation();
       bumpRender();
       return;
     }
@@ -773,6 +871,7 @@ export default function Heatmap2D({
     if (obstacleHit) {
       setSelectedId(null);
       setSelectedObstacleId(obstacleHit.id);
+      hideRoomRotation();
       revealPanel();
       interactionRef.current = {
         type: 'obstacle-moving',
@@ -787,9 +886,10 @@ export default function Heatmap2D({
 
     if (!inRoomRect(x, y)) {
       setSelectedId(null);
+      hideRoomRotation();
       // Only treat clicks inside the outdoor area as obstacle placement;
       // clicks outside the canvas's drawable region just deselect (the
-      // compass margin is reserved for the rotating compass rose).
+      // compass margin is reserved for orientation controls).
       if (onAddObstacle && inOutdoorArea(x, y)) {
         const world = canvasToWorldXZ(x, y, pxW, pxH, roomW, roomD);
         const type = OBSTACLE_TYPES.find(t => t.id === obstacleType) || OBSTACLE_TYPES[0];
@@ -815,6 +915,7 @@ export default function Heatmap2D({
       if (sel) {
         const hit = hitTestAny(sel, x, y);
         if (hit) {
+          hideRoomRotation();
           revealPanel();
           startInteraction(sel, hit, x, y);
           return;
@@ -834,6 +935,7 @@ export default function Heatmap2D({
       const hit = hitTestAny(win, x, y);
       if (hit) {
         setSelectedId(win.id);
+        hideRoomRotation();
         revealPanel();
         startInteraction(win, hit, x, y);
         return;
@@ -849,9 +951,11 @@ export default function Heatmap2D({
         wall,
         startM: alongM,
         currentM: alongM,
+        startAbs: abs,
       };
       setSelectedId(null);
       setSelectedObstacleId(null);
+      hideRoomRotation();
       bumpRender();
       return;
     }
@@ -862,9 +966,11 @@ export default function Heatmap2D({
       type: 'drawing-skylight',
       startX: X, startZ: Z,
       currentX: X, currentZ: Z,
+      startAbs: abs,
     };
     setSelectedId(null);
     setSelectedObstacleId(null);
+    hideRoomRotation();
     bumpRender();
   };
 
@@ -895,9 +1001,12 @@ export default function Heatmap2D({
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    if (ia.type === 'rotating') {
-      const abs = getAbsPos(e);
-      if (onBearingChange) onBearingChange(bearingFromAbsPoint(abs.x, abs.y));
+    if (ia.type === 'rotating-room') {
+      const { x, y } = getCanvasPos(e);
+      const currentAngle = angleFromRoomPoint(x, y);
+      if (onBearingChange && currentAngle != null) {
+        onBearingChange(normalizeBearing(ia.startBearing + signedAngleDelta(ia.startAngle, currentAngle)));
+      }
       bumpRender();
       return;
     }
@@ -1013,11 +1122,19 @@ export default function Heatmap2D({
     }
   };
 
-  const onMouseUp = () => {
+  const onMouseUp = (e) => {
     const ia = interactionRef.current;
     if (!ia) return;
+    const endAbs = e ? getAbsPos(e) : null;
 
-    if (ia.type === 'drawing-wall') {
+    if (ia.type === 'rotating-room') {
+      scheduleRoomRotationHide();
+    } else if (ia.type === 'drawing-wall') {
+      if (!pointerMovedEnough(ia.startAbs, endAbs)) {
+        interactionRef.current = null;
+        bumpRender();
+        return;
+      }
       const min = Math.min(ia.startM, ia.currentM);
       const max = Math.max(ia.startM, ia.currentM);
       if (max - min >= MIN_WINDOW_WIDTH) {
@@ -1035,6 +1152,14 @@ export default function Heatmap2D({
         }
       }
     } else if (ia.type === 'drawing-skylight') {
+      if (!pointerMovedEnough(ia.startAbs, endAbs)) {
+        setSelectedId(null);
+        setSelectedObstacleId(null);
+        showRoomRotation();
+        interactionRef.current = null;
+        bumpRender();
+        return;
+      }
       const xMin = Math.min(ia.startX, ia.currentX);
       const xMax = Math.max(ia.startX, ia.currentX);
       const zMin = Math.min(ia.startZ, ia.currentZ);
@@ -1074,6 +1199,7 @@ export default function Heatmap2D({
       } else if (e.key === 'Escape') {
         setSelectedId(null);
         setSelectedObstacleId(null);
+        hideRoomRotation();
       }
     };
     window.addEventListener('keydown', onKey);
@@ -1084,17 +1210,16 @@ export default function Heatmap2D({
   const [cursor, setCursor] = useState('crosshair');
   const onHoverMove = (e) => {
     if (interactionRef.current) {
-      if (interactionRef.current.type === 'rotating') setCursor('grabbing');
+      if (interactionRef.current.type === 'rotating-room') setCursor('grabbing');
       return;
     }
     const canvas = canvasRef.current;
     if (!canvas) return;
-    // Compass-N hover check (uses absolute canvas coords)
-    if (onBearingChange) {
-      const abs = getAbsPos(e);
-      if (isNearCompassN(abs.x, abs.y)) { setCursor('grab'); return; }
-    }
     const { x, y } = getCanvasPos(e);
+    if (isNearRoomRotateHandle(x, y)) {
+      setCursor('grab');
+      return;
+    }
     const roomHit = onDimsChange ? roomResizeHit(x, y, pxW, pxH) : null;
     if (roomHit) {
       setCursor(roomResizeCursor(roomHit));
@@ -1160,6 +1285,30 @@ export default function Heatmap2D({
           touchAction: 'none',
         }}
       />
+
+      {onAddObstacle && (
+        <button
+          type="button"
+          onClick={addExternalObject}
+          style={{
+            position: 'absolute',
+            top: 48,
+            right: 8,
+            height: 30,
+            padding: '0 10px',
+            background: '#24243c',
+            color: '#e0e0f0',
+            border: '1px solid #4a4a6a',
+            borderRadius: 5,
+            fontSize: 11,
+            fontWeight: 700,
+            cursor: 'pointer',
+            boxShadow: '0 3px 12px rgba(0,0,0,0.25)',
+          }}
+        >
+          Add external object
+        </button>
+      )}
 
       {selected && !isSkylight(selected) && (
         <WallWindowPanel
@@ -1247,7 +1396,7 @@ function panelShell(children, visible = true, handlers = {}) {
       {...handlers}
       style={{
       position: 'absolute',
-      top: 8,
+      top: 88,
       right: 8,
       background: 'rgba(18,18,31,0.95)',
       border: '1px solid #3a3a5a',

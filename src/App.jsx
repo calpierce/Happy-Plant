@@ -92,9 +92,9 @@ export default function App() {
             lineHeight: 1.5,
           }}>
             Drag along a wall edge to add a window, or drag inside the room
-            to add a skylight. Drag the yellow N compass marker to rotate
-            the room. Click a window to select, then drag to move or use
-            handles to resize. Delete / Backspace removes.
+            to add a skylight. Click empty room space to show the rotation
+            handle, then drag it to rotate. Use Add external object for
+            outside shade. Delete / Backspace removes selected items.
           </div>
         </div>
 

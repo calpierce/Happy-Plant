@@ -238,7 +238,7 @@ export default function Controls({
           {Math.round(bearingDeg)}° · top wall faces {topWallFacing}
         </div>
         <div style={{ fontSize: 10, color: '#707090', marginTop: 4 }}>
-          Drag the yellow N marker on the 2D model to rotate.
+          Click the room on the 2D model, then drag its rotation handle.
         </div>
       </div>
 
