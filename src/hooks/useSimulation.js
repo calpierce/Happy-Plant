@@ -19,7 +19,7 @@ import {
 import { computeInstant, computeMonthlyGrid } from '../simulation/timeIntegration';
 import { emptyGrid, computeWallGrids, clampWindowsToDims } from '../simulation/lightSim';
 import {
-  GRID_SIZE, CITY_PRESETS,
+  INSTANT_GRID_SIZE, CITY_PRESETS,
   DEFAULT_LAT, DEFAULT_LON,
   DEFAULT_LOCATION_LABEL, DEFAULT_BEARING_DEG,
   DEFAULT_ROOM_W, DEFAULT_ROOM_D, DEFAULT_ROOM_H,
@@ -81,11 +81,11 @@ export function useSimulation() {
   const [grid,        setGrid]        = useState(() => emptyGrid());
   const [sunPos,      setSunPos]      = useState(null);
   const [wallGrids,   setWallGrids]   = useState(() => ({
-    S: new Float32Array(GRID_SIZE * GRID_SIZE),
-    N: new Float32Array(GRID_SIZE * GRID_SIZE),
-    E: new Float32Array(GRID_SIZE * GRID_SIZE),
-    W: new Float32Array(GRID_SIZE * GRID_SIZE),
-    ceiling: new Float32Array(GRID_SIZE * GRID_SIZE),
+    S: new Float32Array(INSTANT_GRID_SIZE * INSTANT_GRID_SIZE),
+    N: new Float32Array(INSTANT_GRID_SIZE * INSTANT_GRID_SIZE),
+    E: new Float32Array(INSTANT_GRID_SIZE * INSTANT_GRID_SIZE),
+    W: new Float32Array(INSTANT_GRID_SIZE * INSTANT_GRID_SIZE),
+    ceiling: new Float32Array(INSTANT_GRID_SIZE * INSTANT_GRID_SIZE),
   }));
 
   // ── Room dimensions ────────────────────────────────────────────────────────
@@ -98,6 +98,7 @@ export function useSimulation() {
 
   // Empty room by default — user will click/drag on the heatmap to add windows.
   const [windows, setWindows] = useState([]);
+  const [obstacles, setObstacles] = useState([]);
 
   const playRef = useRef(null);
   const lat = site.lat;
@@ -143,6 +144,20 @@ export function useSimulation() {
   }, []);
 
   const clearWindows = useCallback(() => setWindows([]), []);
+
+  const addObstacle = useCallback((obstacle) => {
+    const id = newId();
+    setObstacles(items => [...items, { id, ...obstacle }]);
+    return id;
+  }, []);
+
+  const updateObstacle = useCallback((id, patch) => {
+    setObstacles(items => items.map(item => item.id === id ? { ...item, ...patch } : item));
+  }, []);
+
+  const removeObstacle = useCallback((id) => {
+    setObstacles(items => items.filter(item => item.id !== id));
+  }, []);
 
   // ── Dimensions setters ─────────────────────────────────────────────────────
   // Update one axis at a time (common case: slider change) or several at once.
@@ -191,28 +206,29 @@ export function useSimulation() {
       : new Date(localTimeAtLonToUTC(year, month - 1, 15, 12, 0, lon));  // mid-month, solar noon
     const sp = getSunPosition(dt, lat, lon);
     setSunPos(sp);
+
     // Wall + ceiling grids always track the current instant sun position —
     // even in monthly mode, the 3D view's directional light is instant.
-    setWallGrids(computeWallGrids(sp, windows, dims, { bearingDeg }));
-  }, [mode, date, timeMinutes, month, year, windows, dims, lat, lon, bearingDeg]);
+    setWallGrids(computeWallGrids(sp, windows, dims, { bearingDeg, obstacles }));
+  }, [mode, date, timeMinutes, month, year, windows, dims, lat, lon, bearingDeg, obstacles]);
 
   // ── Recompute grid on state changes ────────────────────────────────────────
   useEffect(() => {
     if (mode === 'instant') {
       const dt = buildDateTime(date, timeMinutes, lon);
-      const g  = computeInstant(dt, lat, lon, windows, dims, { bearingDeg });
+      const g  = computeInstant(dt, lat, lon, windows, dims, { bearingDeg, obstacles });
       setGrid(g);
 
     } else if (mode === 'monthly') {
       setIsLoading(true);
       const ref = setTimeout(() => {
-        const g = computeMonthlyGrid(year, month, lat, lon, windows, dims, { bearingDeg });
+        const g = computeMonthlyGrid(year, month, lat, lon, windows, dims, { bearingDeg, obstacles });
         setGrid(g);
         setIsLoading(false);
       }, 20);
       return () => clearTimeout(ref);
     }
-  }, [mode, date, timeMinutes, month, year, windows, dims, lat, lon, bearingDeg]);
+  }, [mode, date, timeMinutes, month, year, windows, dims, lat, lon, bearingDeg, obstacles]);
 
   // ── Derived sun info for display ───────────────────────────────────────────
   let sunInfo = null;
@@ -257,6 +273,10 @@ export function useSimulation() {
     updateWindow,
     removeWindow,
     clearWindows,
+    obstacles,
+    addObstacle,
+    updateObstacle,
+    removeObstacle,
     // room-dimensions API
     dims,
     setDims,

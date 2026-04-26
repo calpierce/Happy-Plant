@@ -1,5 +1,4 @@
 import { computeGrid, computeWallGrids } from './src/simulation/lightSim.js';
-import { GRID_SIZE } from './src/simulation/constants.js';
 
 function summary(label, grid) {
   let min = Infinity, max = -Infinity, sum = 0;
@@ -8,13 +7,14 @@ function summary(label, grid) {
 }
 
 function halfMeans(grid) {
+  const gridSize = Math.sqrt(grid.length);
   let south = 0, north = 0, west = 0, east = 0;
   let southN = 0, northN = 0, westN = 0, eastN = 0;
-  for (let i = 0; i < GRID_SIZE; i++) {
-    for (let j = 0; j < GRID_SIZE; j++) {
-      const v = grid[i * GRID_SIZE + j];
-      if (j < GRID_SIZE / 2) { south += v; southN++; } else { north += v; northN++; }
-      if (i < GRID_SIZE / 2) { west += v; westN++; } else { east += v; eastN++; }
+  for (let i = 0; i < gridSize; i++) {
+    for (let j = 0; j < gridSize; j++) {
+      const v = grid[i * gridSize + j];
+      if (j < gridSize / 2) { south += v; southN++; } else { north += v; northN++; }
+      if (i < gridSize / 2) { west += v; westN++; } else { east += v; eastN++; }
     }
   }
   return {

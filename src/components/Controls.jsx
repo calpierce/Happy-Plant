@@ -1,17 +1,11 @@
 /**
  * Controls panel – time slider, date / month picker, mode selector, play button,
- * 3D-view options, sun info, and room-size sliders.
+ * and 3D-view options.
  * Designed to be compact and work on narrow mobile screens.
  */
 
 import { useState, useRef, useEffect } from 'react';
 import { format } from 'date-fns';
-import {
-  MIN_ROOM_W, MAX_ROOM_W,
-  MIN_ROOM_D, MAX_ROOM_D,
-  MIN_ROOM_H, MAX_ROOM_H,
-  DEFAULT_ROOM_W, DEFAULT_ROOM_D, DEFAULT_ROOM_H,
-} from '../simulation/constants';
 import { bearingToCompassLabel } from '../simulation/solar';
 import { searchCities } from '../simulation/cities';
 
@@ -36,9 +30,6 @@ export default function Controls({
   isPlaying, setIsPlaying,
   isLoading,
   cutaway, setCutaway,
-  sunInfo,
-  // Room-size props
-  dims, setDims, resetDims,
 }) {
   const labelStyle = {
     display: 'block',
@@ -91,14 +82,6 @@ export default function Controls({
   const topWallFacing = bearingToCompassLabel(bearingDeg);
   const currentYear = new Date().getFullYear();
   const yearOptions = Array.from({ length: 9 }, (_, i) => currentYear - 2 + i);
-
-  // Guard against dims being undefined during initial render.
-  const safeDims = dims || { W: DEFAULT_ROOM_W, D: DEFAULT_ROOM_D, H: DEFAULT_ROOM_H };
-  const isDefault = (
-    Math.abs(safeDims.W - DEFAULT_ROOM_W) < 1e-3 &&
-    Math.abs(safeDims.D - DEFAULT_ROOM_D) < 1e-3 &&
-    Math.abs(safeDims.H - DEFAULT_ROOM_H) < 1e-3
-  );
 
   return (
     <div style={{ color: '#e0e0f0', fontFamily: 'system-ui, sans-serif', fontSize: 13 }}>
@@ -259,64 +242,6 @@ export default function Controls({
         </div>
       </div>
 
-      {/* ── Room size ──────────────────────────────────────────────────────── */}
-      {setDims && (
-        <div
-          style={{
-            ...rowStyle,
-            padding: '10px 12px',
-            background: '#14141f',
-            borderRadius: 6,
-            border: '1px solid #22223a',
-          }}
-        >
-          <div style={{
-            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-            marginBottom: 8,
-          }}>
-            <span style={{ ...labelStyle, marginBottom: 0 }}>Room size</span>
-            {resetDims && (
-              <button
-                onClick={resetDims}
-                disabled={isDefault}
-                style={{
-                  ...btnBase,
-                  padding: '3px 8px',
-                  fontSize: 10,
-                  background: isDefault ? '#1a1a2e' : '#2a2a45',
-                  color: isDefault ? '#4a4a6a' : '#c0c0e0',
-                  border: `1px solid ${isDefault ? '#2a2a3a' : '#4a4a6a'}`,
-                  cursor: isDefault ? 'default' : 'pointer',
-                }}
-                title="Reset to 4 × 4 × 2.5 m"
-              >
-                Reset
-              </button>
-            )}
-          </div>
-
-          <DimSlider
-            label="Width (E–W)"
-            value={safeDims.W}
-            min={MIN_ROOM_W} max={MAX_ROOM_W}
-            onChange={v => setDims({ W: v })}
-          />
-          <DimSlider
-            label="Depth (N–S)"
-            value={safeDims.D}
-            min={MIN_ROOM_D} max={MAX_ROOM_D}
-            onChange={v => setDims({ D: v })}
-          />
-          <DimSlider
-            label="Ceiling height"
-            value={safeDims.H}
-            min={MIN_ROOM_H} max={MAX_ROOM_H}
-            onChange={v => setDims({ H: v })}
-            last
-          />
-        </div>
-      )}
-
       {/* ── 3D view options ────────────────────────────────────────────────── */}
       <div style={rowStyle}>
         <span style={labelStyle}>3D view</span>
@@ -334,38 +259,6 @@ export default function Controls({
           Show room interior (hide walls facing camera)
         </label>
       </div>
-
-      {/* ── Sun info strip ─────────────────────────────────────────────────── */}
-      {sunInfo && (
-        <div style={{
-          marginTop: 8,
-          padding: '8px 10px',
-          background: '#12121f',
-          borderRadius: 5,
-          border: '1px solid #2a2a45',
-          fontSize: 11,
-          color: '#8080a8',
-          lineHeight: 1.7,
-        }}>
-          {mode === 'instant' && (
-            <>
-              <span style={{ color: sunInfo.isAboveHorizon ? '#f0c840' : '#505070' }}>
-                {sunInfo.isAboveHorizon ? '☀' : '🌙'}
-              </span>
-              {' '}Altitude: <b style={{ color: '#c0c0e0' }}>{sunInfo.altitudeDeg}°</b>
-              &nbsp;·&nbsp;
-              Az: <b style={{ color: '#c0c0e0' }}>{sunInfo.azimuthDesc}</b>
-            </>
-          )}
-          {mode !== 'instant' && (
-            <>
-              Sunrise <b style={{ color: '#c0c0e0' }}>{sunInfo.sunrise}</b>
-              &nbsp;·&nbsp;
-              Sunset <b style={{ color: '#c0c0e0' }}>{sunInfo.sunset}</b>
-            </>
-          )}
-        </div>
-      )}
 
       {/* ── Loading indicator ──────────────────────────────────────────────── */}
       {isLoading && (
@@ -556,30 +449,6 @@ function LocationTypeahead({ site, updateSite, selectStyle }) {
           No matching cities. Use advanced lat/lon below to enter a custom spot.
         </div>
       )}
-    </div>
-  );
-}
-
-// ─── Dimension slider ────────────────────────────────────────────────────────
-function DimSlider({ label, value, min, max, onChange, last = false }) {
-  return (
-    <div style={{ marginBottom: last ? 0 : 10 }}>
-      <div style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        fontSize: 11, color: '#9090b8', marginBottom: 2,
-      }}>
-        <span>{label}</span>
-        <b style={{ color: '#c0c0e0' }}>{value.toFixed(2)} m</b>
-      </div>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={0.1}
-        value={value}
-        onChange={e => onChange(Number(e.target.value))}
-        style={{ width: '100%', accentColor: '#f0c840', cursor: 'pointer' }}
-      />
     </div>
   );
 }

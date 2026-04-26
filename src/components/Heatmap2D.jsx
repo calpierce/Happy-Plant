@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
-import { intensityToRGB } from '../simulation/lightSim';
+import { OBSTACLE_TYPES, WINDOW_CONFIGS, intensityToRGB, makeFloorPalette } from '../simulation/lightSim';
 import { normalizeBearing, bearingToCompassLabel } from '../simulation/solar';
 import {
-  GRID_SIZE,
   DEFAULT_ROOM_W, DEFAULT_ROOM_D, DEFAULT_ROOM_H,
   DEFAULT_WIN_Y_MIN, DEFAULT_WIN_Y_MAX,
   MIN_WINDOW_WIDTH, MIN_SKYLIGHT_SIZE,
+  MIN_ROOM_W, MAX_ROOM_W,
+  MIN_ROOM_D, MAX_ROOM_D,
+  MIN_ROOM_H, MAX_ROOM_H,
 } from '../simulation/constants';
 
 /**
@@ -29,10 +31,19 @@ const CANVAS_PX = 360;
 const WALL_HIT_MARGIN = 18;
 const HANDLE_SIZE_PX  = 10;
 // Padding on each side of the canvas reserved for the rotating compass rose
-// (N / S / E / W markers drawn around the room).  The room rect lives inside
-// CANVAS_PX - 2*COMPASS_MARGIN.
+// (N / S / E / W markers drawn around the room).  The drawable area (which
+// holds the outdoor zone + the room rect) lives inside CANVAS_PX - 2*COMPASS_MARGIN.
 const COMPASS_MARGIN  = 22;
 const COMPASS_HIT_PX  = 16;  // hit radius around the draggable N marker
+const PANEL_VISIBLE_MS = 1200;
+const PANEL_HOVER_VISIBLE_MS = 1000;
+const ROOM_RESIZE_HIT_PX = 14;
+// How much outdoor world-space we expose around the room, expressed as a
+// fraction of the room's dimensions on each side. 0.5 means a 4 m room is
+// surrounded by 2 m of placeable outdoor area on every side, so users can
+// drop trees / hedges / fences a meaningful distance from the walls instead
+// of being pinned to the immediate edge.
+const OUTDOOR_BUFFER_RATIO = 0.5;
 
 const kindOf = (w) => w.kind || 'wall';
 const isSkylight = (w) => kindOf(w) === 'skylight';
@@ -67,6 +78,21 @@ function canvasToRoomXZ(x, y, W, H, roomW, roomD) {
   return {
     X: Math.max(0, Math.min(roomW, (x / W) * roomW)),
     Z: Math.max(0, Math.min(roomD, ((H - y) / H) * roomD)),
+  };
+}
+
+function canvasToWorldXZ(x, y, W, H, roomW, roomD) {
+  return {
+    X: (x / W) * roomW,
+    Z: ((H - y) / H) * roomD,
+  };
+}
+
+function obstacleToCanvas(obstacle, W, H, roomW, roomD) {
+  return {
+    x: (obstacle.x / roomW) * W,
+    y: H - (obstacle.z / roomD) * H,
+    r: ((obstacle.radius || 0.55) / Math.max(roomW, roomD)) * Math.max(W, H),
   };
 }
 
@@ -136,6 +162,105 @@ function hitTestSkylight(win, x, y, W, H, roomW, roomD) {
   return null;
 }
 
+function roomResizeHit(x, y, W, H) {
+  const hits = [
+    ['NW', 0, 0],
+    ['NE', W, 0],
+    ['SW', 0, H],
+    ['SE', W, H],
+    ['N', W / 2, 0],
+    ['E', W, H / 2],
+    ['S', W / 2, H],
+    ['W', 0, H / 2],
+  ];
+  for (const [name, hx, hy] of hits) {
+    if (Math.hypot(x - hx, y - hy) <= ROOM_RESIZE_HIT_PX) return name;
+  }
+  return null;
+}
+
+function roomResizeCursor(hit) {
+  if (hit === 'NW' || hit === 'SE') return 'nwse-resize';
+  if (hit === 'NE' || hit === 'SW') return 'nesw-resize';
+  if (hit === 'E' || hit === 'W') return 'ew-resize';
+  if (hit === 'N' || hit === 'S') return 'ns-resize';
+  return null;
+}
+
+function clamp(v, lo, hi) {
+  return Math.max(lo, Math.min(hi, v));
+}
+
+function gridSizeFor(grid) {
+  const size = Math.sqrt(grid?.length || 0);
+  return Number.isInteger(size) && size > 0 ? size : 1;
+}
+
+function obstacleTypeFor(typeId) {
+  return OBSTACLE_TYPES.find(type => type.id === typeId) || OBSTACLE_TYPES[0];
+}
+
+function windowConfigById(id) {
+  return WINDOW_CONFIGS.find(c => c.id === id) || WINDOW_CONFIGS[0];
+}
+
+function drawWindowConfigPattern(ctx, r, configId, isSelected) {
+  const config = windowConfigById(configId);
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(r.x, r.y, r.w, r.h);
+  ctx.clip();
+
+  const baseAlpha = isSelected ? 0.95 : 0.82;
+  if (config.id === 'clear') {
+    ctx.fillStyle = `rgba(140,210,255,${baseAlpha})`;
+    ctx.fillRect(r.x, r.y, r.w, r.h);
+    ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(r.x + 2, r.y + r.h - 2);
+    ctx.lineTo(r.x + r.w - 2, r.y + 2);
+    ctx.stroke();
+  } else if (config.id === 'low-e') {
+    ctx.fillStyle = `rgba(90,150,220,${baseAlpha})`;
+    ctx.fillRect(r.x, r.y, r.w, r.h);
+    ctx.fillStyle = 'rgba(255,255,255,0.28)';
+    ctx.fillRect(r.x, r.y, Math.max(2, r.w * 0.28), r.h);
+  } else if (config.id === 'frosted') {
+    ctx.fillStyle = `rgba(210,222,220,${baseAlpha})`;
+    ctx.fillRect(r.x, r.y, r.w, r.h);
+    ctx.fillStyle = 'rgba(255,255,255,0.45)';
+    const count = Math.max(8, Math.round((r.w + r.h) * 0.6));
+    for (let i = 0; i < count; i++) {
+      const x = r.x + ((i * 11) % Math.max(1, r.w));
+      const y = r.y + ((i * 7) % Math.max(1, r.h));
+      ctx.fillRect(x, y, 1.5, 1.5);
+    }
+  } else if (config.id === 'sheer-blinds') {
+    ctx.fillStyle = `rgba(180,205,220,${baseAlpha})`;
+    ctx.fillRect(r.x, r.y, r.w, r.h);
+    ctx.strokeStyle = 'rgba(255,244,210,0.75)';
+    ctx.lineWidth = 2;
+    for (let y = r.y + 2; y < r.y + r.h; y += 5) {
+      ctx.beginPath();
+      ctx.moveTo(r.x, y);
+      ctx.lineTo(r.x + r.w, y);
+      ctx.stroke();
+    }
+  } else {
+    ctx.fillStyle = `rgba(160,132,88,${baseAlpha})`;
+    ctx.fillRect(r.x, r.y, r.w, r.h);
+    for (let y = r.y; y < r.y + r.h; y += 5) {
+      ctx.fillStyle = 'rgba(85,65,42,0.8)';
+      ctx.fillRect(r.x, y, r.w, 2.5);
+      ctx.fillStyle = 'rgba(230,205,160,0.45)';
+      ctx.fillRect(r.x, y + 2.5, r.w, 1);
+    }
+  }
+
+  ctx.restore();
+}
+
 // ─── Component ───────────────────────────────────────────────────────────────
 
 export default function Heatmap2D({
@@ -144,31 +269,100 @@ export default function Heatmap2D({
   onAddWindow,
   onUpdateWindow,
   onRemoveWindow,
+  obstacles = [],
+  onAddObstacle,
+  onUpdateObstacle,
+  onRemoveObstacle,
   showGridLines = true,
   bearingDeg = 0,
   onBearingChange,
+  onDimsChange,
+  onResetDims,
   dims = { W: DEFAULT_ROOM_W, D: DEFAULT_ROOM_D, H: DEFAULT_ROOM_H },
+  sunPos = null,
 }) {
   const { W: roomW, D: roomD, H: roomH } = dims;
 
   const canvasRef  = useRef(null);
   const wrapperRef = useRef(null);
   const [selectedId, setSelectedId] = useState(null);
+  const [selectedObstacleId, setSelectedObstacleId] = useState(null);
+  const [panelVisible, setPanelVisible] = useState(false);
+  const [obstacleType, setObstacleType] = useState('tree');
 
   const interactionRef = useRef(null);
+  const panelHideTimerRef = useRef(null);
+  const panelPointerInsideRef = useRef(false);
   const [, setDragTick] = useState(0);
   const bumpRender = () => setDragTick(t => t + 1);
 
-  // The 2D canvas stays square in pixels, but we preserve the room's aspect
-  // ratio by letterboxing: the longer dimension fills the drawable area, the
-  // shorter dimension uses a fraction. The drawable area is inset by
-  // COMPASS_MARGIN on every side to make room for the rotating compass rose.
+  const clearPanelTimer = () => {
+    if (panelHideTimerRef.current) {
+      clearTimeout(panelHideTimerRef.current);
+      panelHideTimerRef.current = null;
+    }
+  };
+
+  const revealPanel = (duration = PANEL_VISIBLE_MS) => {
+    clearPanelTimer();
+    setPanelVisible(true);
+    if (duration > 0 && !panelPointerInsideRef.current) {
+      panelHideTimerRef.current = setTimeout(() => {
+        setPanelVisible(false);
+        panelHideTimerRef.current = null;
+      }, duration);
+    }
+  };
+
+  useEffect(() => {
+    if (selectedId || selectedObstacleId) revealPanel();
+    else {
+      clearPanelTimer();
+      setPanelVisible(false);
+      panelPointerInsideRef.current = false;
+    }
+    return clearPanelTimer;
+  }, [selectedId, selectedObstacleId]);
+
+  // The 2D canvas stays square in pixels. Inside the drawable area
+  // (CANVAS_PX - 2*COMPASS_MARGIN on a side) we letterbox the OUTDOOR area —
+  // i.e. the room plus a buffer of OUTDOOR_BUFFER_RATIO * room-size on every
+  // side — preserving its aspect ratio. The room itself is then centred
+  // inside the outdoor area as a smaller rect, leaving real estate around
+  // it where users can drop trees, hedges, fences, etc.
+  //
+  //   ┌── canvas ──────────────────────────────┐
+  //   │  N E S W markers (compass rose)        │
+  //   │   ┌── outdoor area ─────────────┐      │
+  //   │   │ (placeable buffer)          │      │
+  //   │   │   ┌── room rect ────┐       │      │
+  //   │   │   │ heatmap, walls, │       │      │
+  //   │   │   │ windows...      │       │      │
+  //   │   │   └─────────────────┘       │      │
+  //   │   └─────────────────────────────┘      │
+  //   └────────────────────────────────────────┘
   const drawableSize = CANVAS_PX - 2 * COMPASS_MARGIN;
-  const roomLongest = Math.max(roomW, roomD);
-  const pxW = (roomW / roomLongest) * drawableSize;
-  const pxH = (roomD / roomLongest) * drawableSize;
-  const pxOffsetX = (CANVAS_PX - pxW) / 2;
-  const pxOffsetY = (CANVAS_PX - pxH) / 2;
+  // World extent of the outdoor area = room + buffer on each side.
+  const worldW = roomW * (1 + 2 * OUTDOOR_BUFFER_RATIO);
+  const worldD = roomD * (1 + 2 * OUTDOOR_BUFFER_RATIO);
+  const worldLongest = Math.max(worldW, worldD);
+  // Outdoor area in canvas pixels (letterboxed to preserve aspect ratio).
+  const outW = (worldW / worldLongest) * drawableSize;
+  const outH = (worldD / worldLongest) * drawableSize;
+  const outOffsetX = (CANVAS_PX - outW) / 2;
+  const outOffsetY = (CANVAS_PX - outH) / 2;
+  // Room rect inside the outdoor area. Pixel-per-metre is uniform across the
+  // outdoor area, so we can just scale the room dimensions by the same ratio.
+  const pxPerM = outW / worldW;  // == outH / worldD by construction
+  const pxW = roomW * pxPerM;
+  const pxH = roomD * pxPerM;
+  const roomInsetX = roomW * OUTDOOR_BUFFER_RATIO * pxPerM;
+  const roomInsetY = roomD * OUTDOOR_BUFFER_RATIO * pxPerM;
+  // pxOffsetX/Y is the canvas-absolute position of the ROOM rect's top-left.
+  // (Kept under the same name so the rest of the file — getCanvasPos,
+  // canvasToWorldXZ etc. — continues to work in room-relative coords.)
+  const pxOffsetX = outOffsetX + roomInsetX;
+  const pxOffsetY = outOffsetY + roomInsetY;
 
   // Compass rose lives in canvas-absolute coords (not the translated room
   // frame).  It's centred on the canvas and sized so the N/S/E/W markers
@@ -208,16 +402,34 @@ export default function Heatmap2D({
     ctx.save();
     ctx.translate(pxOffsetX, pxOffsetY);
 
-    const cellW = pxW / GRID_SIZE;
-    const cellH = pxH / GRID_SIZE;
+    // Outdoor area background — a subtle, slightly-greenish "ground" tone
+    // surrounding the room so the user can see where they can drop trees /
+    // hedges / fences. Drawn first so the heatmap, walls, etc. paint on top.
+    ctx.save();
+    ctx.fillStyle = 'rgba(40,55,42,0.55)';
+    ctx.fillRect(-roomInsetX, -roomInsetY, outW, outH);
+    // Soft inner shadow at the room boundary to separate indoor/outdoor.
+    ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(-roomInsetX + 0.5, -roomInsetY + 0.5, outW - 1, outH - 1);
+    ctx.restore();
+
+    const gridSize = gridSizeFor(grid);
+    const cellW = pxW / gridSize;
+    const cellH = pxH / gridSize;
+
+    // Build a palette once per render, shifted by the sun's altitude
+    // (warm at dawn/dusk, neutral near solar noon). When no sunPos is
+    // available (e.g. first render), falls back to the default mid palette.
+    const palette = makeFloorPalette(sunPos?.altitude);
 
     // Heatmap
-    for (let i = 0; i < GRID_SIZE; i++) {
-      for (let j = 0; j < GRID_SIZE; j++) {
-        const val = grid[i * GRID_SIZE + j];
-        const [r, g, b] = intensityToRGB(val);
+    for (let i = 0; i < gridSize; i++) {
+      for (let j = 0; j < gridSize; j++) {
+        const val = grid[i * gridSize + j];
+        const [r, g, b] = intensityToRGB(val, palette);
         ctx.fillStyle = `rgb(${r},${g},${b})`;
-        const screenY = (GRID_SIZE - 1 - j) * cellH;
+        const screenY = (gridSize - 1 - j) * cellH;
         ctx.fillRect(i * cellW, screenY, cellW + 0.5, cellH + 0.5);
       }
     }
@@ -226,10 +438,10 @@ export default function Heatmap2D({
     if (showGridLines) {
       ctx.strokeStyle = 'rgba(255,255,255,0.08)';
       ctx.lineWidth   = 0.5;
-      for (let i = 0; i <= GRID_SIZE; i++) {
+      for (let i = 0; i <= gridSize; i++) {
         ctx.beginPath(); ctx.moveTo(i * cellW, 0); ctx.lineTo(i * cellW, pxH); ctx.stroke();
       }
-      for (let j = 0; j <= GRID_SIZE; j++) {
+      for (let j = 0; j <= gridSize; j++) {
         ctx.beginPath(); ctx.moveTo(0, j * cellH); ctx.lineTo(pxW, j * cellH); ctx.stroke();
       }
     }
@@ -239,13 +451,43 @@ export default function Heatmap2D({
     ctx.lineWidth = 1;
     ctx.strokeRect(0.5, 0.5, pxW - 1, pxH - 1);
 
+    // Crop-style room resize handles: drag edges/corners to change W/D.
+    if (onDimsChange) {
+      const handle = 14;
+      const edgeMid = [
+        [pxW / 2, 0], [pxW, pxH / 2], [pxW / 2, pxH], [0, pxH / 2],
+      ];
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255,244,210,0.75)';
+      ctx.fillStyle = 'rgba(18,18,31,0.8)';
+      ctx.lineWidth = 2;
+      const corners = [
+        [0, 0, 1, 1], [pxW, 0, -1, 1], [pxW, pxH, -1, -1], [0, pxH, 1, -1],
+      ];
+      for (const [cx, cy, sx, sy] of corners) {
+        ctx.beginPath();
+        ctx.moveTo(cx, cy + sy * handle);
+        ctx.lineTo(cx, cy);
+        ctx.lineTo(cx + sx * handle, cy);
+        ctx.stroke();
+      }
+      for (const [cx, cy] of edgeMid) {
+        ctx.beginPath();
+        ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
     // ── Skylights first (underneath wall-window bars) ─────────────────────
     for (const win of windows) {
       if (!isSkylight(win)) continue;
       const isSel = win.id === selectedId;
       const r = skylightRect(win, pxW, pxH, roomW, roomD);
 
-      ctx.fillStyle   = isSel ? 'rgba(255,220,120,0.30)' : 'rgba(140,210,255,0.22)';
+      drawWindowConfigPattern(ctx, r, win.config, isSel);
+      ctx.fillStyle = isSel ? 'rgba(255,220,120,0.18)' : 'rgba(140,210,255,0.10)';
       ctx.fillRect(r.x, r.y, r.w, r.h);
 
       // Dashed border to distinguish from heatmap cells
@@ -279,8 +521,11 @@ export default function Heatmap2D({
       if (isSkylight(win)) continue;
       const isSel = win.id === selectedId;
       const r = wallWindowRect(win, pxW, pxH, roomW, roomD, 7);
-      ctx.fillStyle = isSel ? 'rgba(255,220,120,0.95)' : 'rgba(140,210,255,0.85)';
-      ctx.fillRect(r.x, r.y, r.w, r.h);
+      drawWindowConfigPattern(ctx, r, win.config, isSel);
+      if (isSel) {
+        ctx.fillStyle = 'rgba(255,220,120,0.22)';
+        ctx.fillRect(r.x, r.y, r.w, r.h);
+      }
 
       if (isSel) {
         ctx.fillStyle = '#fffbe8';
@@ -334,6 +579,46 @@ export default function Heatmap2D({
       ctx.restore();
     }
 
+    // ── Outdoor obstacles ────────────────────────────────────────────────
+    for (const obstacle of obstacles) {
+      const type = obstacleTypeFor(obstacle.type);
+      const p = obstacleToCanvas(obstacle, pxW, pxH, roomW, roomD);
+      const isSel = obstacle.id === selectedObstacleId;
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      if (type.id === 'tree') {
+        ctx.fillStyle = isSel ? 'rgba(120,210,105,0.95)' : 'rgba(55,145,70,0.88)';
+        ctx.beginPath();
+        ctx.arc(0, 0, Math.max(8, p.r), 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = 'rgba(50,80,35,0.9)';
+        ctx.beginPath();
+        ctx.arc(0, 0, Math.max(2.5, p.r * 0.22), 0, Math.PI * 2);
+        ctx.fill();
+      } else if (type.id === 'hedge') {
+        ctx.fillStyle = isSel ? 'rgba(125,205,90,0.95)' : 'rgba(70,145,55,0.88)';
+        ctx.fillRect(-p.r * 1.3, -p.r * 0.55, p.r * 2.6, p.r * 1.1);
+      } else if (type.id === 'fence') {
+        ctx.strokeStyle = isSel ? 'rgba(230,205,160,0.95)' : 'rgba(170,135,95,0.9)';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(-p.r * 1.4, 0);
+        ctx.lineTo(p.r * 1.4, 0);
+        ctx.stroke();
+      } else {
+        ctx.fillStyle = isSel ? 'rgba(170,155,135,0.95)' : 'rgba(120,105,90,0.9)';
+        ctx.fillRect(-p.r, -p.r * 0.75, p.r * 2, p.r * 1.5);
+      }
+      if (isSel) {
+        ctx.strokeStyle = '#fffbe8';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(0, 0, Math.max(9, p.r + 3), 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
     // Empty-room hint
     if (windows.length === 0 && !ia) {
       ctx.font = '11px system-ui, sans-serif';
@@ -378,7 +663,7 @@ export default function Heatmap2D({
       ctx.fillText(m.label, m.x, m.y);
     }
     ctx.restore();
-  }, [grid, windows, selectedId, showGridLines, roomW, roomD, roomH, pxW, pxH, pxOffsetX, pxOffsetY, bearingDeg, compassMarkers]);
+  }, [grid, windows, obstacles, selectedId, selectedObstacleId, showGridLines, roomW, roomD, roomH, pxW, pxH, pxOffsetX, pxOffsetY, outW, outH, roomInsetX, roomInsetY, bearingDeg, compassMarkers, sunPos?.altitude, onDimsChange]);
 
   // ── Mouse handlers ────────────────────────────────────────────────────────
   // Returns coords inside the ROOM rect (0..pxW, 0..pxH), accounting for
@@ -425,9 +710,33 @@ export default function Heatmap2D({
     x >= -2 && x <= pxW + 2 && y >= -2 && y <= pxH + 2
   );
 
+  // True if a point is anywhere inside the outdoor area (the larger rect that
+  // contains the room plus the OUTDOOR_BUFFER_RATIO buffer on every side).
+  // Coords are in the room-relative frame returned by getCanvasPos, so the
+  // outdoor area spans [-roomInsetX, pxW + roomInsetX] × [-roomInsetY, pxH + roomInsetY].
+  const inOutdoorArea = (x, y) => (
+    x >= -roomInsetX - 2 && x <= pxW + roomInsetX + 2 &&
+    y >= -roomInsetY - 2 && y <= pxH + roomInsetY + 2
+  );
+
+  // World-coordinate bounds for placeable obstacles.
+  const worldMinX = -roomW * OUTDOOR_BUFFER_RATIO;
+  const worldMaxX =  roomW * (1 + OUTDOOR_BUFFER_RATIO);
+  const worldMinZ = -roomD * OUTDOOR_BUFFER_RATIO;
+  const worldMaxZ =  roomD * (1 + OUTDOOR_BUFFER_RATIO);
+
   const hitTestAny = (win, x, y) =>
     isSkylight(win) ? hitTestSkylight(win, x, y, pxW, pxH, roomW, roomD)
                     : hitTestWallWindow(win, x, y, pxW, pxH, roomW, roomD);
+
+  const hitTestObstacle = (x, y) => {
+    for (let k = obstacles.length - 1; k >= 0; k--) {
+      const obstacle = obstacles[k];
+      const p = obstacleToCanvas(obstacle, pxW, pxH, roomW, roomD);
+      if (Math.hypot(x - p.x, y - p.y) <= Math.max(12, p.r + 4)) return obstacle;
+    }
+    return null;
+  };
 
   const onMouseDown = (e) => {
     const canvas = canvasRef.current;
@@ -438,13 +747,67 @@ export default function Heatmap2D({
     if (onBearingChange && isNearCompassN(abs.x, abs.y)) {
       interactionRef.current = { type: 'rotating' };
       setSelectedId(null);
+      setSelectedObstacleId(null);
       onBearingChange(bearingFromAbsPoint(abs.x, abs.y));
       bumpRender();
       return;
     }
 
     const { x, y } = getCanvasPos(e);
-    if (!inRoomRect(x, y)) { setSelectedId(null); return; }
+    const roomHit = onDimsChange ? roomResizeHit(x, y, pxW, pxH) : null;
+    if (roomHit) {
+      interactionRef.current = {
+        type: 'room-resize',
+        handle: roomHit,
+        startAbs: abs,
+        startDims: { ...dims },
+        metersPerPx: 1 / pxPerM,
+      };
+      setSelectedId(null);
+      setSelectedObstacleId(null);
+      bumpRender();
+      return;
+    }
+
+    const obstacleHit = hitTestObstacle(x, y);
+    if (obstacleHit) {
+      setSelectedId(null);
+      setSelectedObstacleId(obstacleHit.id);
+      revealPanel();
+      interactionRef.current = {
+        type: 'obstacle-moving',
+        id: obstacleHit.id,
+        startAbs: abs,
+        startObstacle: { ...obstacleHit },
+        metersPerPx: 1 / pxPerM,
+      };
+      bumpRender();
+      return;
+    }
+
+    if (!inRoomRect(x, y)) {
+      setSelectedId(null);
+      // Only treat clicks inside the outdoor area as obstacle placement;
+      // clicks outside the canvas's drawable region just deselect (the
+      // compass margin is reserved for the rotating compass rose).
+      if (onAddObstacle && inOutdoorArea(x, y)) {
+        const world = canvasToWorldXZ(x, y, pxW, pxH, roomW, roomD);
+        const type = OBSTACLE_TYPES.find(t => t.id === obstacleType) || OBSTACLE_TYPES[0];
+        const id = onAddObstacle?.({
+          type: type.id,
+          x: clamp(world.X, worldMinX, worldMaxX),
+          z: clamp(world.Z, worldMinZ, worldMaxZ),
+          radius: type.radius,
+          height: type.height,
+        });
+        setSelectedObstacleId(id || null);
+        revealPanel();
+      } else {
+        setSelectedObstacleId(null);
+      }
+      bumpRender();
+      return;
+    }
 
     // 1. Currently-selected item has priority.
     if (selectedId) {
@@ -452,6 +815,7 @@ export default function Heatmap2D({
       if (sel) {
         const hit = hitTestAny(sel, x, y);
         if (hit) {
+          revealPanel();
           startInteraction(sel, hit, x, y);
           return;
         }
@@ -470,6 +834,7 @@ export default function Heatmap2D({
       const hit = hitTestAny(win, x, y);
       if (hit) {
         setSelectedId(win.id);
+        revealPanel();
         startInteraction(win, hit, x, y);
         return;
       }
@@ -486,6 +851,7 @@ export default function Heatmap2D({
         currentM: alongM,
       };
       setSelectedId(null);
+      setSelectedObstacleId(null);
       bumpRender();
       return;
     }
@@ -498,6 +864,7 @@ export default function Heatmap2D({
       currentX: X, currentZ: Z,
     };
     setSelectedId(null);
+    setSelectedObstacleId(null);
     bumpRender();
   };
 
@@ -531,6 +898,34 @@ export default function Heatmap2D({
     if (ia.type === 'rotating') {
       const abs = getAbsPos(e);
       if (onBearingChange) onBearingChange(bearingFromAbsPoint(abs.x, abs.y));
+      bumpRender();
+      return;
+    }
+
+    if (ia.type === 'room-resize') {
+      const abs = getAbsPos(e);
+      const dx = (abs.x - ia.startAbs.x) * ia.metersPerPx;
+      const dy = (abs.y - ia.startAbs.y) * ia.metersPerPx;
+      const patch = {};
+      if (ia.handle.includes('E')) patch.W = clamp(ia.startDims.W + dx, MIN_ROOM_W, MAX_ROOM_W);
+      if (ia.handle.includes('W')) patch.W = clamp(ia.startDims.W - dx, MIN_ROOM_W, MAX_ROOM_W);
+      if (ia.handle.includes('S')) patch.D = clamp(ia.startDims.D + dy, MIN_ROOM_D, MAX_ROOM_D);
+      if (ia.handle.includes('N')) patch.D = clamp(ia.startDims.D - dy, MIN_ROOM_D, MAX_ROOM_D);
+      if (Object.keys(patch).length) onDimsChange(patch);
+      bumpRender();
+      return;
+    }
+
+    if (ia.type === 'obstacle-moving') {
+      const abs = getAbsPos(e);
+      const dx = (abs.x - ia.startAbs.x) * ia.metersPerPx;
+      const dz = -(abs.y - ia.startAbs.y) * ia.metersPerPx;
+      onUpdateObstacle?.(ia.id, {
+        // Clamp to the outdoor area so obstacles can't be dragged off the
+        // canvas where the user couldn't reach them again.
+        x: clamp(ia.startObstacle.x + dx, worldMinX, worldMaxX),
+        z: clamp(ia.startObstacle.z + dz, worldMinZ, worldMaxZ),
+      });
       bumpRender();
       return;
     }
@@ -630,10 +1025,14 @@ export default function Heatmap2D({
           kind: 'wall',
           wall: ia.wall,
           min, max,
+          config: 'clear',
           yMin: Math.min(DEFAULT_WIN_Y_MIN, Math.max(0, roomH - 0.5)),
           yMax: Math.min(DEFAULT_WIN_Y_MAX, roomH),
         });
-        if (id) setSelectedId(id);
+        if (id) {
+          setSelectedId(id);
+          revealPanel();
+        }
       }
     } else if (ia.type === 'drawing-skylight') {
       const xMin = Math.min(ia.startX, ia.currentX);
@@ -643,9 +1042,13 @@ export default function Heatmap2D({
       if (xMax - xMin >= MIN_SKYLIGHT_SIZE && zMax - zMin >= MIN_SKYLIGHT_SIZE) {
         const id = onAddWindow({
           kind: 'skylight',
+          config: 'clear',
           xMin, xMax, zMin, zMax,
         });
-        if (id) setSelectedId(id);
+        if (id) {
+          setSelectedId(id);
+          revealPanel();
+        }
       }
     }
 
@@ -662,13 +1065,20 @@ export default function Heatmap2D({
           onRemoveWindow(selectedId);
           setSelectedId(null);
         }
+      } else if ((e.key === 'Delete' || e.key === 'Backspace') && selectedObstacleId) {
+        if (wrapperRef.current && wrapperRef.current.contains(document.activeElement)) {
+          e.preventDefault();
+          onRemoveObstacle?.(selectedObstacleId);
+          setSelectedObstacleId(null);
+        }
       } else if (e.key === 'Escape') {
         setSelectedId(null);
+        setSelectedObstacleId(null);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [selectedId, onRemoveWindow]);
+  }, [selectedId, selectedObstacleId, onRemoveWindow, onRemoveObstacle]);
 
   // ── Cursor styling ────────────────────────────────────────────────────────
   const [cursor, setCursor] = useState('crosshair');
@@ -685,11 +1095,29 @@ export default function Heatmap2D({
       if (isNearCompassN(abs.x, abs.y)) { setCursor('grab'); return; }
     }
     const { x, y } = getCanvasPos(e);
-    if (!inRoomRect(x, y)) { setCursor('default'); return; }
+    const roomHit = onDimsChange ? roomResizeHit(x, y, pxW, pxH) : null;
+    if (roomHit) {
+      setCursor(roomResizeCursor(roomHit));
+      return;
+    }
+    if (hitTestObstacle(x, y)) {
+      const obstacle = hitTestObstacle(x, y);
+      setSelectedId(null);
+      if (obstacle?.id !== selectedObstacleId) setSelectedObstacleId(obstacle.id);
+      revealPanel(PANEL_HOVER_VISIBLE_MS);
+      setCursor('move');
+      return;
+    }
+    if (!inRoomRect(x, y)) {
+      // In the outdoor buffer? Show a "drop here" cursor; otherwise default.
+      setCursor(onAddObstacle && inOutdoorArea(x, y) ? 'copy' : 'default');
+      return;
+    }
     // Hover over an existing item?
     for (const w of windows) {
       const hit = hitTestAny(w, x, y);
       if (!hit) continue;
+      if (w.id === selectedId) revealPanel(PANEL_HOVER_VISIBLE_MS);
       if (hit === 'body') return setCursor('move');
       if (isSkylight(w)) {
         // Diagonal resize cursors based on which corner.
@@ -705,6 +1133,7 @@ export default function Heatmap2D({
 
   // ── Render ────────────────────────────────────────────────────────────────
   const selected = selectedId ? windows.find(w => w.id === selectedId) : null;
+  const selectedObstacle = selectedObstacleId ? obstacles.find(o => o.id === selectedObstacleId) : null;
 
   return (
     <div
@@ -738,6 +1167,18 @@ export default function Heatmap2D({
           roomH={roomH}
           bearingDeg={bearingDeg}
           onChangeY={(yMin, yMax) => onUpdateWindow(selected.id, { yMin, yMax })}
+          onChangeConfig={config => onUpdateWindow(selected.id, { config })}
+          visible={panelVisible}
+          onInteract={() => revealPanel()}
+          onPointerEnter={() => {
+            panelPointerInsideRef.current = true;
+            clearPanelTimer();
+            setPanelVisible(true);
+          }}
+          onPointerLeave={() => {
+            panelPointerInsideRef.current = false;
+            revealPanel(PANEL_HOVER_VISIBLE_MS);
+          }}
           onRemove={() => { onRemoveWindow(selected.id); setSelectedId(null); }}
         />
       )}
@@ -745,7 +1186,53 @@ export default function Heatmap2D({
         <SkylightPanel
           win={selected}
           roomH={roomH}
+          onChangeConfig={config => onUpdateWindow(selected.id, { config })}
+          visible={panelVisible}
+          onPointerEnter={() => {
+            panelPointerInsideRef.current = true;
+            clearPanelTimer();
+            setPanelVisible(true);
+          }}
+          onPointerLeave={() => {
+            panelPointerInsideRef.current = false;
+            revealPanel(PANEL_HOVER_VISIBLE_MS);
+          }}
           onRemove={() => { onRemoveWindow(selected.id); setSelectedId(null); }}
+        />
+      )}
+
+      <RoomHeightControl
+        dims={dims}
+        onDimsChange={onDimsChange}
+        onResetDims={onResetDims}
+      />
+      {selectedObstacle && (
+        <ObstaclePanel
+          obstacle={selectedObstacle}
+          visible={panelVisible}
+          onChangeType={typeId => {
+            const type = OBSTACLE_TYPES.find(t => t.id === typeId) || OBSTACLE_TYPES[0];
+            setObstacleType(type.id);
+            onUpdateObstacle?.(selectedObstacle.id, {
+              type: type.id,
+              radius: type.radius,
+              height: type.height,
+            });
+            revealPanel();
+          }}
+          onPointerEnter={() => {
+            panelPointerInsideRef.current = true;
+            clearPanelTimer();
+            setPanelVisible(true);
+          }}
+          onPointerLeave={() => {
+            panelPointerInsideRef.current = false;
+            revealPanel(PANEL_HOVER_VISIBLE_MS);
+          }}
+          onRemove={() => {
+            onRemoveObstacle?.(selectedObstacle.id);
+            setSelectedObstacleId(null);
+          }}
         />
       )}
     </div>
@@ -754,9 +1241,11 @@ export default function Heatmap2D({
 
 // ─── Floating panels ─────────────────────────────────────────────────────────
 
-function panelShell(children) {
+function panelShell(children, visible = true, handlers = {}) {
   return (
-    <div style={{
+    <div
+      {...handlers}
+      style={{
       position: 'absolute',
       top: 8,
       right: 8,
@@ -769,13 +1258,21 @@ function panelShell(children) {
       fontFamily: 'system-ui, sans-serif',
       fontSize: 12,
       boxShadow: '0 4px 16px rgba(0,0,0,0.35)',
+      opacity: visible ? 1 : 0,
+      transform: visible ? 'translateY(0) scale(1)' : 'translateY(-4px) scale(0.98)',
+      pointerEvents: visible ? 'auto' : 'none',
+      transition: 'opacity 180ms ease, transform 180ms ease',
     }}>
       {children}
     </div>
   );
 }
 
-function WallWindowPanel({ win, roomH, bearingDeg = 0, onChangeY, onRemove }) {
+function WallWindowPanel({
+  win, roomH, bearingDeg = 0, visible,
+  onChangeY, onChangeConfig, onRemove, onInteract,
+  onPointerEnter, onPointerLeave,
+}) {
   // Room-local wall bearings (N=0, E=90, S=180, W=270) rotated by bearingDeg
   // give the wall's true compass bearing.
   const WALL_BEARING = { N: 0, E: 90, S: 180, W: 270 };
@@ -794,6 +1291,8 @@ function WallWindowPanel({ win, roomH, bearingDeg = 0, onChangeY, onRemove }) {
         Width: <b style={{ color: '#c0c0e0' }}>{width} m</b>
       </div>
 
+      <WindowConfigSelect win={win} onChange={onChangeConfig} onInteract={onInteract} />
+
       <div style={{ ...label, marginBottom: 4 }}>
         <span>Bottom</span>
         <b style={{ color: '#c0c0e0', marginLeft: 'auto' }}>{win.yMin.toFixed(2)} m</b>
@@ -803,6 +1302,7 @@ function WallWindowPanel({ win, roomH, bearingDeg = 0, onChangeY, onRemove }) {
         value={win.yMin}
         onChange={e => {
           const v = Math.min(Number(e.target.value), win.yMax - 0.1);
+          onInteract?.();
           onChangeY(v, win.yMax);
         }}
         style={slider}
@@ -817,17 +1317,23 @@ function WallWindowPanel({ win, roomH, bearingDeg = 0, onChangeY, onRemove }) {
         value={win.yMax}
         onChange={e => {
           const v = Math.max(Number(e.target.value), win.yMin + 0.1);
+          onInteract?.();
           onChangeY(win.yMin, v);
         }}
         style={slider}
       />
 
       <RemoveButton onClick={onRemove} />
-    </>
+    </>,
+    visible,
+    { onPointerEnter, onPointerLeave }
   );
 }
 
-function SkylightPanel({ win, roomH, onRemove }) {
+function SkylightPanel({
+  win, roomH, visible, onChangeConfig, onRemove,
+  onPointerEnter, onPointerLeave,
+}) {
   const xSize = (win.xMax - win.xMin).toFixed(2);
   const zSize = (win.zMax - win.zMin).toFixed(2);
   const area  = ((win.xMax - win.xMin) * (win.zMax - win.zMin)).toFixed(2);
@@ -842,8 +1348,196 @@ function SkylightPanel({ win, roomH, onRemove }) {
         Area:&nbsp;<b style={{ color: '#c0c0e0' }}>{area} m²</b><br />
         In ceiling (Y = {roomH.toFixed(2)} m)
       </div>
+      <WindowConfigSelect win={win} onChange={onChangeConfig} />
       <RemoveButton onClick={onRemove} />
-    </>
+    </>,
+    visible,
+    { onPointerEnter, onPointerLeave }
+  );
+}
+
+function WindowConfigSelect({ win, onChange, onInteract }) {
+  return (
+    <label style={{ display: 'grid', gap: 4, marginBottom: 10 }}>
+      <span style={{
+        color: '#9090b8',
+        fontSize: 10,
+        fontWeight: 700,
+        letterSpacing: '0.06em',
+        textTransform: 'uppercase',
+      }}>
+        Configuration
+      </span>
+      <select
+        value={win.config || 'clear'}
+        onChange={e => {
+          onInteract?.();
+          onChange?.(e.target.value);
+        }}
+        style={{
+          width: '100%',
+          background: '#1a1a2e',
+          color: '#e0e0f0',
+          border: '1px solid #3a3a5a',
+          borderRadius: 5,
+          padding: '5px 7px',
+          fontSize: 12,
+        }}
+      >
+        {WINDOW_CONFIGS.map(config => (
+          <option key={config.id} value={config.id}>
+            {config.label} · {config.description}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function RoomHeightControl({ dims, onDimsChange, onResetDims }) {
+  if (!onDimsChange) return null;
+  const isDefault = (
+    Math.abs(dims.W - DEFAULT_ROOM_W) < 1e-3 &&
+    Math.abs(dims.D - DEFAULT_ROOM_D) < 1e-3 &&
+    Math.abs(dims.H - DEFAULT_ROOM_H) < 1e-3
+  );
+  return (
+    <div style={{
+      marginTop: 10,
+      display: 'grid',
+      gridTemplateColumns: 'repeat(3, minmax(0, 1fr)) auto',
+      gap: 8,
+      alignItems: 'end',
+      color: '#c0c0e0',
+      fontSize: 11,
+    }}>
+      <DimInput
+        label="Room width"
+        value={dims.W}
+        min={MIN_ROOM_W}
+        max={MAX_ROOM_W}
+        onChange={v => onDimsChange({ W: v })}
+      />
+      <DimInput
+        label="Room depth"
+        value={dims.D}
+        min={MIN_ROOM_D}
+        max={MAX_ROOM_D}
+        onChange={v => onDimsChange({ D: v })}
+      />
+      <DimInput
+        label="Room height"
+        value={dims.H}
+        min={MIN_ROOM_H}
+        max={MAX_ROOM_H}
+        onChange={v => onDimsChange({ H: v })}
+      />
+      {onResetDims && (
+        <button
+          onClick={onResetDims}
+          disabled={isDefault}
+          style={{
+            height: 28,
+            padding: '0 8px',
+            background: isDefault ? '#171724' : '#24243c',
+            color: isDefault ? '#555570' : '#c0c0e0',
+            border: `1px solid ${isDefault ? '#28283a' : '#4a4a6a'}`,
+            borderRadius: 5,
+            fontSize: 10,
+            fontWeight: 700,
+            cursor: isDefault ? 'default' : 'pointer',
+          }}
+        >
+          Reset
+        </button>
+      )}
+    </div>
+  );
+}
+
+function ObstaclePanel({
+  obstacle, visible, onChangeType, onRemove,
+  onPointerEnter, onPointerLeave,
+}) {
+  const type = OBSTACLE_TYPES.find(option => option.id === obstacle.type) || OBSTACLE_TYPES[0];
+  return panelShell(
+    <>
+      <div style={{ fontWeight: 700, letterSpacing: '0.04em', marginBottom: 6 }}>
+        Outdoor object
+      </div>
+      <div style={{ color: '#8080a8', fontSize: 11, marginBottom: 10 }}>
+        {type.label} · {Number(obstacle.height ?? type.height).toFixed(1)} m high
+      </div>
+      <label style={{ display: 'grid', gap: 4, marginBottom: 10 }}>
+        <span style={{
+          color: '#9090b8',
+          fontSize: 10,
+          fontWeight: 700,
+          letterSpacing: '0.06em',
+          textTransform: 'uppercase',
+        }}>
+          Object type
+        </span>
+        <select
+          value={type.id}
+          onChange={e => onChangeType?.(e.target.value)}
+          style={{
+            width: '100%',
+            background: '#1a1a2e',
+            color: '#e0e0f0',
+            border: '1px solid #3a3a5a',
+            borderRadius: 5,
+            padding: '5px 7px',
+            fontSize: 12,
+          }}
+        >
+          {OBSTACLE_TYPES.map(option => (
+            <option key={option.id} value={option.id}>{option.label}</option>
+          ))}
+        </select>
+      </label>
+      <RemoveButton onClick={onRemove} />
+    </>,
+    visible,
+    { onPointerEnter, onPointerLeave }
+  );
+}
+
+function DimInput({ label, value, min, max, onChange }) {
+  return (
+    <label style={{ display: 'grid', gap: 3, minWidth: 0 }}>
+      <span style={{
+        color: '#8080a8',
+        fontSize: 10,
+        fontWeight: 700,
+        letterSpacing: '0.06em',
+        textTransform: 'uppercase',
+      }}>
+        {label}
+      </span>
+      <input
+        type="number"
+        value={Number(value).toFixed(1)}
+        min={min}
+        max={max}
+        step={0.1}
+        onChange={e => {
+          const next = Number(e.target.value);
+          if (Number.isFinite(next)) onChange(next);
+        }}
+        style={{
+          minWidth: 0,
+          height: 28,
+          boxSizing: 'border-box',
+          background: '#1a1a2e',
+          color: '#e0e0f0',
+          border: '1px solid #3a3a5a',
+          borderRadius: 5,
+          padding: '4px 6px',
+          fontSize: 12,
+        }}
+      />
+    </label>
   );
 }
 

@@ -49,8 +49,10 @@ export const MIN_SKYLIGHT_SIZE = 0.3;   // smallest allowed skylight side (m)
 export const WALL_REFLECTANCE  = 0.7;
 export const FLOOR_REFLECTANCE = 0.5;
 
-// ─── Simulation grid ─────────────────────────────────────────────────────────
-export const GRID_SIZE = 20;   // 20 × 20 cells (independent of room size)
+// ─── Simulation grids ────────────────────────────────────────────────────────
+export const INSTANT_GRID_SIZE = 60;   // 60 × 60 cells for the current-moment view
+export const MONTHLY_GRID_SIZE = 30;   // 30 × 30 cells for month-average sampling
+export const GRID_SIZE = INSTANT_GRID_SIZE; // legacy alias for instant-resolution callers
 
 // ─── Location ─────────────────────────────────────────────────────────────────
 export const DEFAULT_LAT = 51.5074;   // London

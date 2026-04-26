@@ -14,7 +14,7 @@ import {
   REFERENCE_INTENSITY_MAX, REFERENCE_AVG_INTENSITY_MAX,
 } from './lightSim.js';
 import {
-  GRID_SIZE,
+  INSTANT_GRID_SIZE, MONTHLY_GRID_SIZE,
   DEFAULT_ROOM_W, DEFAULT_ROOM_D, DEFAULT_ROOM_H,
 } from './constants.js';
 
@@ -32,13 +32,13 @@ function absoluteScale(grid, ref) {
 
 export function computeInstant(date, lat, lon, windows, dims = DEFAULT_DIMS, options = {}) {
   const sunPos = getSunPosition(date, lat, lon);
-  const raw    = computeGrid(sunPos, windows, dims, options);
+  const raw    = computeGrid(sunPos, windows, dims, { ...options, gridSize: INSTANT_GRID_SIZE });
   return absoluteScale(raw, REFERENCE_INTENSITY_MAX);
 }
 
 export function computeMonthlyGrid(year, month, lat, lon, windows, dims = DEFAULT_DIMS, options = {}) {
   const days = getMonthDays(year, month);
-  let accumulated = new Float32Array(GRID_SIZE * GRID_SIZE);
+  let accumulated = new Float32Array(MONTHLY_GRID_SIZE * MONTHLY_GRID_SIZE);
   let n = 0;
 
   for (const day of days) {
@@ -49,7 +49,7 @@ export function computeMonthlyGrid(year, month, lat, lon, windows, dims = DEFAUL
     for (const t of samples) {
       const sunPos = getSunPosition(t, lat, lon);
       if (sunPos.isAboveHorizon) {
-        accumulated = addGrids(accumulated, computeGrid(sunPos, windows, dims, options));
+        accumulated = addGrids(accumulated, computeGrid(sunPos, windows, dims, { ...options, gridSize: MONTHLY_GRID_SIZE }));
         n++;
       }
     }

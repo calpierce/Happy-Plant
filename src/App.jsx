@@ -2,32 +2,7 @@ import Heatmap2D  from './components/Heatmap2D';
 import RoomView3D from './components/RoomView3D';
 import Controls   from './components/Controls';
 import { useSimulation } from './hooks/useSimulation';
-import { bearingToCompassLabel, formatLatLon } from './simulation/solar';
 import './app.css';
-
-// ── Colour legend ──────────────────────────────────────────────────────────────
-function Legend() {
-  const stops = [
-    '#05050f', '#2a1e0a', '#aa6820', '#eed058', '#fcf0a5', '#fffaeb',
-  ];
-  const gradient = `linear-gradient(to right, ${stops.join(', ')})`;
-  return (
-    <div style={{ marginTop: 8 }}>
-      <div style={{
-        height: 10, borderRadius: 4,
-        background: gradient,
-        border: '1px solid #2a2a45',
-      }} />
-      <div style={{
-        display: 'flex', justifyContent: 'space-between',
-        fontSize: 10, color: '#5a5a7a', marginTop: 3,
-      }}>
-        <span>Low</span>
-        <span>High</span>
-      </div>
-    </div>
-  );
-}
 
 // ── Section heading ────────────────────────────────────────────────────────────
 function SectionLabel({ children }) {
@@ -60,11 +35,6 @@ export default function App() {
     padding:    14,
   };
 
-  const { W, D, H } = sim.dims;
-  const sizeStr = `${W.toFixed(1)} × ${D.toFixed(1)} m · ${H.toFixed(1)} m high`;
-  const locationStr = `${sim.site.label} · ${formatLatLon(sim.site.lat, sim.site.lon)}`;
-  const facingStr = `top wall faces ${bearingToCompassLabel(sim.bearingDeg)}`;
-
   return (
     <div style={{
       minHeight: '100dvh',
@@ -88,9 +58,6 @@ export default function App() {
           <div style={{ fontSize: 14, fontWeight: 700, letterSpacing: '0.02em' }}>
             Indoor Light Simulator
           </div>
-          <div style={{ fontSize: 10, color: '#5a5a7a' }}>
-            {sizeStr} · {locationStr} · {facingStr}
-          </div>
         </div>
       </header>
 
@@ -106,12 +73,18 @@ export default function App() {
             onAddWindow={sim.addWindow}
             onUpdateWindow={sim.updateWindow}
             onRemoveWindow={sim.removeWindow}
+            obstacles={sim.obstacles}
+            onAddObstacle={sim.addObstacle}
+            onUpdateObstacle={sim.updateObstacle}
+            onRemoveObstacle={sim.removeObstacle}
             bearingDeg={sim.bearingDeg}
             onBearingChange={sim.setBearingDeg}
             dims={sim.dims}
+            onDimsChange={sim.setDims}
+            onResetDims={sim.resetDims}
+            sunPos={sim.sunPos}
             showGridLines
           />
-          <Legend />
           <div style={{
             marginTop: 8,
             fontSize: 10,
@@ -132,6 +105,7 @@ export default function App() {
             grid={sim.grid}
             wallGrids={sim.wallGrids}
             windows={sim.windows}
+            obstacles={sim.obstacles}
             sunPos={sim.sunPos}
             cutaway={sim.cutaway}
             mode={sim.mode}
@@ -170,9 +144,6 @@ export default function App() {
             isPlaying={sim.isPlaying} setIsPlaying={sim.setIsPlaying}
             isLoading={sim.isLoading}
             cutaway={sim.cutaway}     setCutaway={sim.setCutaway}
-            sunInfo={sim.sunInfo}
-            dims={sim.dims}           setDims={sim.setDims}
-            resetDims={sim.resetDims}
           />
         </div>
       </div>
