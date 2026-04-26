@@ -40,8 +40,9 @@ const ROOM_ROTATE_HANDLE_OFFSET_PX = 40;
 const ROOM_ROTATE_HIT_PX = 24;
 const CLICK_DRAG_THRESHOLD_PX = 5;
 const ROOM_ROTATION_IDLE_MS = 1100;
-const PANEL_VISIBLE_MS = 520;
-const PANEL_HOVER_VISIBLE_MS = 420;
+const PANEL_VISIBLE_MS = 300;
+const PANEL_HOVER_VISIBLE_MS = 260;
+const PANEL_FADE_MS = 95;
 const ROOM_RESIZE_HIT_PX = 14;
 // How much outdoor world-space we expose around the room, expressed as a
 // fraction of the room's dimensions on each side. 0.5 means a 4 m room is
@@ -1401,9 +1402,10 @@ function panelShell(children, visible = true, handlers = {}) {
       fontSize: 12,
       boxShadow: '0 4px 16px rgba(0,0,0,0.35)',
       opacity: visible ? 1 : 0,
-      transform: visible ? 'translateY(0) scale(1)' : 'translateY(-3px) scale(0.985)',
+      transform: visible ? 'translateY(0) scale(1)' : 'translateY(-2px) scale(0.99)',
       pointerEvents: visible ? 'auto' : 'none',
-      transition: 'opacity 105ms ease-out, transform 105ms ease-out',
+      transition: `opacity ${PANEL_FADE_MS}ms cubic-bezier(0.2, 0, 0.2, 1), transform ${PANEL_FADE_MS}ms cubic-bezier(0.2, 0, 0.2, 1)`,
+      willChange: 'opacity, transform',
     }}>
       {children}
     </div>
